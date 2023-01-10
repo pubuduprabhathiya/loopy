@@ -32,7 +32,7 @@ from pytools import MinRecursionLimit, ProcessLogger
 
 from pytools.persistent_dict import WriteOncePersistentDict
 from loopy.tools import LoopyKeyBuilder
-from loopy.version import DATA_MODEL_VERSION
+#from loopy.version import DATA_MODEL_VERSION
 
 import logging
 logger = logging.getLogger(__name__)
@@ -2134,7 +2134,7 @@ def generate_loop_schedules_inner(kernel, callables_table, debug_args=None):
 
 
 schedule_cache = WriteOncePersistentDict(
-        "loopy-schedule-cache-v4-"+DATA_MODEL_VERSION,
+        "loopy-schedule-cache-v4-",
         key_builder=LoopyKeyBuilder())
 
 

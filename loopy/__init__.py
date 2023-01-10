@@ -156,6 +156,7 @@ from loopy.target.c import (CFamilyTarget, CTarget, ExecutableCTarget,
                             ExecutableCWithGNULibcTarget)
 from loopy.target.cuda import CudaTarget
 from loopy.target.opencl import OpenCLTarget
+from loopy.target.sycl import SYCLTarget
 from loopy.target.pyopencl import PyOpenCLTarget
 from loopy.target.ispc import ISPCTarget
 
@@ -301,7 +302,7 @@ __all__ = [
         "TargetBase",
         "CFamilyTarget", "CTarget", "ExecutableCTarget", "generate_header",
         "CWithGNULibcTarget", "ExecutableCWithGNULibcTarget",
-        "CudaTarget", "OpenCLTarget",
+        "CudaTarget", "OpenCLTarget","SYCLTarget",
         "PyOpenCLTarget", "ISPCTarget",
         "ASTBuilderBase",
 
