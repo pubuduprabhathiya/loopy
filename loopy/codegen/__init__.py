@@ -654,10 +654,9 @@ def generate_code_v2(program):
             host_programs=host_programs,
             device_programs=device_programs,
             device_preambles=device_preambles)
-
     if CACHING_ENABLED:
         code_gen_cache.store_if_not_present(input_program, cgr)
-
+        
     return cgr
 
 
