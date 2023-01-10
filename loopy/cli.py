@@ -87,6 +87,9 @@ def main():
     elif args.target == "cuda":
         from loopy.target.cuda import CudaTarget
         target = CudaTarget
+    elif args.target == "sycl":
+        from loopy.target.sycl import SYCLTarget
+        target = SYCLTarget
     else:
         raise ValueError("unknown target: %s" % target)
 

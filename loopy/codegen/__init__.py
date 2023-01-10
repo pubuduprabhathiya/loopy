@@ -572,15 +572,16 @@ def generate_code_v2(program):
 
     from loopy import CACHING_ENABLED
 
-    if CACHING_ENABLED:
-        input_program = program
-        try:
-            result = code_gen_cache[input_program]
-            logger.debug(f"TranslationUnit with entrypoints {program.entrypoints}:"
-                         " code generation cache hit")
-            return result
-        except KeyError:
-            pass
+    # if CACHING_ENABLED:
+    #     input_program = program
+    #     try:
+    #         result = code_gen_cache[input_program]
+    #         logger.debug(f"TranslationUnit with entrypoints {program.entrypoints}:"
+    #                      " code generation cache hit")
+            
+    #         return result
+    #     except KeyError:
+    #         pass
 
     # }}}
 
@@ -653,10 +654,8 @@ def generate_code_v2(program):
             host_programs=host_programs,
             device_programs=device_programs,
             device_preambles=device_preambles)
-
-    if CACHING_ENABLED:
-        code_gen_cache.store_if_not_present(input_program, cgr)
-
+   # if CACHING_ENABLED:
+    #     code_gen_cache.store_if_not_present(input_program, cgr)
     return cgr
 
 
