@@ -34,6 +34,7 @@ from loopy.target.c import CFamilyTarget, CFamilyASTBuilder
 from loopy.target.c.codegen.expression import ExpressionToCExpressionMapper
 from loopy.diagnostic import LoopyError, LoopyTypeError
 from loopy.types import NumpyType
+from loopy.kernel import LoopKernel
 from loopy.target.c import DTypeRegistryWrapper
 from loopy.kernel.array import VectorArrayDimTag, FixedStrideArrayDimTag, ArrayBase
 from loopy.kernel.data import AddressSpace, ImageArg, ConstantArg, ArrayArg
@@ -633,6 +634,16 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             arg_decl = Const(arg_decl)
         return arg_decl
 
+    def get_buffer_arg_declarator(
+            self, arg: ArrayArg, is_written: bool) -> Declarator:
+        from cgen.sycl import Buffer
+        
+        arg_decl = Buffer(self.get_array_base_declarator(arg),self.target.dtype_to_typename(arg.dtype))
+
+        if not is_written:
+            arg_decl = Const(arg_decl)
+        return arg_decl
+
     def get_function_definition(
             self, codegen_state: CodeGenerationState,
             codegen_result: CodeGenerationResult,
@@ -680,20 +691,82 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                             codegen_state, tv, tv.initializer))
 
                     result.append(decl)
-        from cgen.sycl import SYCLBody
+        from cgen.sycl import SYCLQueueSubmit
         kernel = codegen_state.kernel
         from loopy.schedule import get_insn_ids_for_block_at
         global_sizes, local_sizes = kernel.get_grid_sizes_for_insn_ids_as_exprs(
                 get_insn_ids_for_block_at(
                     codegen_state.kernel.linearization, schedule_index),
                 codegen_state.callables_table)
-        function_body=Block([SYCLBody(function_body,len(global_sizes))])
+
+        from loopy.schedule import CallKernel
+        assert codegen_state.kernel.linearization is not None
+        subkernel_name = cast(
+                        CallKernel,
+                        codegen_state.kernel.linearization[schedule_index]
+                        ).kernel_name
+
+        if codegen_state.is_entrypoint:
+            # subkernel launches occur only as part of entrypoint kernels for now
+            from loopy.schedule.tools import get_subkernel_arg_info
+            skai = get_subkernel_arg_info(kernel, subkernel_name)
+            passed_names = skai.passed_names
+            written_names = skai.written_names
+        accessors= []
+        for arg_name in passed_names:
+            acc=self.buffer_to_accessor(
+                            kernel, arg_name,
+                            is_written=arg_name in written_names)
+            if(acc!=None):
+                accessors.append(acc)
+        from cgen.sycl import SYCLparallel_for 
+        function_body=Block([SYCLQueueSubmit(Block(accessors+[SYCLparallel_for(function_body,len(global_sizes))]))])
+        #function_body=Block(accessors)
         fbody = FunctionBody(function_decl, function_body)
         if not result:
             return fbody
         else:
             return Collection(result+[Line(), fbody])
 
+    def get_buffer_to_accessor(self, arg: ArrayArg, is_written: bool) -> Declarator:
+        from cgen import Assign,Value
+        from cgen.sycl import SYCLGetAccessor
+        arg_decl = Assign(f"auto {arg.name}",SYCLGetAccessor(arg.name,is_written))
+        print(arg_decl)
+        return arg_decl
+
+    def buffer_to_accessor( self, kernel: LoopKernel, passed_name: str, is_written: bool):
+        var_descr = kernel.get_var_descriptor(passed_name)
+        if isinstance(var_descr, ArrayArg):
+            return self.get_buffer_to_accessor(var_descr, is_written)
+        return None
+
+    def arg_to_cgen_declarator(
+            self, kernel: LoopKernel, passed_name: str, is_written: bool
+            ) -> Declarator:
+        from loopy.kernel.data import (TemporaryVariable, AddressSpace, ArrayArg,
+        ConstantArg, ImageArg, ValueArg)
+        if passed_name in kernel.all_inames():
+            assert not is_written
+            return self.get_value_arg_declaraotor(
+                    passed_name, kernel.index_dtype, is_written)
+        var_descr = kernel.get_var_descriptor(passed_name)
+        print(var_descr.dtype)
+        if isinstance(var_descr, ValueArg):
+            assert var_descr.dtype is not None
+            return self.get_value_arg_declaraotor(
+                    var_descr.name, var_descr.dtype, is_written)
+        elif isinstance(var_descr, ArrayArg):            
+            return self.get_buffer_arg_declarator(var_descr, is_written)
+        elif isinstance(var_descr, TemporaryVariable):
+            return self.get_temporary_arg_decl(var_descr, is_written)
+        elif isinstance(var_descr, ConstantArg):
+            return self.get_constant_arg_declarator(var_descr)
+        elif isinstance(var_descr, ImageArg):
+            return self.get_image_arg_declarator(var_descr, is_written)
+        else:
+            raise ValueError(f"unexpected type of argument '{passed_name}': "
+                    f"'{type(var_descr)}'")
 
     def get_function_declaration(
             self, codegen_state: CodeGenerationState,
@@ -733,6 +806,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                             kernel, arg_name,
                             is_written=arg_name in written_names)
                         for arg_name in passed_names]))
+        
         preambles=self.required_work_grop_size(codegen_state,schedule_index,preambles)
         assert isinstance(fdecl, FunctionDeclarationWrapper)
         if not codegen_state.is_entrypoint:
