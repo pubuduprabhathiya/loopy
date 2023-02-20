@@ -560,19 +560,19 @@ def sycl_preamble_generator(preamble_info):
 
     kernel = preamble_info.kernel
 
-    yield (
-        "00_declare_gid_lid",
-        remove_common_indentation(
-            """
-                #define lid(N) ((%(idx_ctype)s) %(item)s.get_local_id(N))
-                #define gid(N) ((%(idx_ctype)s) %(item)s.get_group_id(N))
-                """
-            % dict(
-                idx_ctype=kernel.target.dtype_to_typename(kernel.index_dtype),
-                item=_SYCL_VARIABLE["nd_item"],
-            )
-        ),
-    )
+    # yield (
+    #     "00_declare_gid_lid",
+    #     remove_common_indentation(
+    #         """
+    #             #define lid(N) ((%(idx_ctype)s) %(item)s.get_local_id(N))
+    #             #define gid(N) ((%(idx_ctype)s) %(item)s.get_group_id(N))
+    #             """
+    #         % dict(
+    #             idx_ctype=kernel.target.dtype_to_typename(kernel.index_dtype),
+    #             item=_SYCL_VARIABLE["nd_item"],
+    #         )
+    #     ),
+    # )
 
     for func in preamble_info.seen_functions:
         if func.name == "pow" and func.c_name == "powf32":
@@ -611,10 +611,10 @@ class ExpressionToSYCLCExpressionMapper(ExpressionToCExpressionMapper):
         return super().wrap_in_typecast_lazy(actual_dtype, needed_dtype, s)
 
     def map_group_hw_index(self, expr, type_context):
-        return var("item.get_global_id")(expr.axis)
+        return var("{}.get_global_id".format(_SYCL_VARIABLE["nd_item"]))(expr.axis)
 
     def map_local_hw_index(self, expr, type_context):
-        return var("item.get_local_id")(expr.axis)
+        return var("{}.get_local_id".format(_SYCL_VARIABLE["nd_item"]))(expr.axis)
 
 
 # }}}
@@ -983,7 +983,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
 
             from cgen import Statement
 
-            return Statement(f"group_barrier(item.get_group()){comment}")
+            return Statement("group_barrier({}.get_group()){comment}".format(_SYCL_VARIABLE["nd_item"],comment))
         elif synchronization_kind == "global":
             raise LoopyError("SYCL does not have global barriers")
         else:
