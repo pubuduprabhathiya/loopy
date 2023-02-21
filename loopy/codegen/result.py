@@ -340,6 +340,7 @@ def generate_host_or_device_program(codegen_state, schedule_index):
 
     if (codegen_state.is_generating_device_code
             or codegen_state.is_entrypoint):
+        codegen_result=ast_builder.get_code_gen_result(codegen_state, codegen_result, schedule_index)
         codegen_result = merge_codegen_results(
                 codegen_state,
                 ast_builder.generate_top_of_body(codegen_state)

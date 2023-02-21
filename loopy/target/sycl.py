@@ -36,7 +36,8 @@ from loopy.diagnostic import LoopyError, LoopyTypeError
 from loopy.kernel import LoopKernel
 from loopy.kernel.array import (ArrayBase, FixedStrideArrayDimTag,
                                 VectorArrayDimTag)
-from loopy.kernel.data import AddressSpace, ArrayArg, ConstantArg, ImageArg
+from loopy.kernel.data import (TemporaryVariable, AddressSpace, ArrayArg,
+        ConstantArg, ImageArg, ValueArg)
 from loopy.kernel.function_interface import ScalarCallable
 from loopy.target.c import (CFamilyASTBuilder, CFamilyTarget,
                             DTypeRegistryWrapper)
@@ -47,53 +48,6 @@ _SYCL_VARIABLE = {
     "handler": "handler",
     "nd_item": "item",
 }
-
-# {{{ dtype registry wrappers
-
-
-class DTypeRegistryWrapperWithInt8ForBool(DTypeRegistryWrapper):
-    """
-    A DType registry that uses int8 for bool8 types.
-
-    .. note::
-
-        This sub-class is needed because compyte's type registry does
-        not support type aliases.
-    """
-
-    def dtype_to_ctype(self, dtype):
-        from loopy.types import NumpyType
-
-        if isinstance(dtype, NumpyType) and dtype.dtype == np.bool8:
-            return self.wrapped_registry.dtype_to_ctype(NumpyType(np.int8))
-        return self.wrapped_registry.dtype_to_ctype(dtype)
-
-
-class DTypeRegistryWrapperWithAtomics(DTypeRegistryWrapper):
-    def get_or_register_dtype(self, names, dtype=None):
-        if dtype is not None:
-            from loopy.types import AtomicNumpyType, NumpyType
-
-            if isinstance(dtype, AtomicNumpyType):
-                return self.wrapped_registry.get_or_register_dtype(
-                    names, NumpyType(dtype.dtype)
-                )
-
-        return self.wrapped_registry.get_or_register_dtype(names, dtype)
-
-
-class DTypeRegistryWrapperWithCL1Atomics(DTypeRegistryWrapperWithAtomics):
-    def dtype_to_ctype(self, dtype):
-        from loopy.types import AtomicNumpyType
-
-        if isinstance(dtype, AtomicNumpyType):
-            return "volatile " + self.wrapped_registry.dtype_to_ctype(dtype)
-        else:
-            return self.wrapped_registry.dtype_to_ctype(dtype)
-
-
-# }}}
-
 
 # {{{ vector types
 
@@ -220,7 +174,6 @@ class SYCLCallable(ScalarCallable):
             dtype = arg_id_to_dtype[0].numpy_dtype
 
             if dtype.kind in ("u", "i"):
-                # SYCL C 2.2, Section 6.13.3: abs returns *u*gentype
                 from loopy.types import to_unsigned_dtype
 
                 return (
@@ -687,7 +640,60 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         )
 
         return arg_decl
+    def get_temporary_var_declarator(self,
+            codegen_state: CodeGenerationState,
+            temp_var: TemporaryVariable) -> Declarator:
+        import pymbolic.primitives as p
+        from pymbolic.mapper.stringifier import PREC_NONE
 
+        temp_var_decl = self.get_array_base_declarator(temp_var)
+
+        if temp_var.storage_shape:
+            shape = temp_var.storage_shape
+        else:
+            shape = temp_var.shape
+
+        assert isinstance(shape, tuple)
+        assert isinstance(temp_var.dim_tags, tuple)
+
+        from loopy.kernel.array import drop_vec_dims
+        unvec_shape = drop_vec_dims(temp_var.dim_tags, shape)
+
+        if unvec_shape:
+            from cgen.sycl import SYCLAccessor
+            ecm = self.get_expression_to_code_mapper(codegen_state)
+            temp_var_decl = SYCLAccessor(temp_var_decl,_SYCL_VARIABLE["handler"],
+                    ecm(p.flattened_product(unvec_shape),
+                        prec=PREC_NONE, type_context="i"))
+
+
+        return self.wrap_decl_for_address_space(temp_var_decl,
+                temp_var.address_space)
+    def get_code_gen_result(self,codegen_state: CodeGenerationState, codegen_result: CodeGenerationResult, schedule_index: int) -> CodeGenerationResult:
+        from cgen.sycl import SYCLparallel_for
+        from cgen import Block, FunctionBody, Initializer, Line
+
+        from loopy.schedule import get_insn_ids_for_block_at
+        kernel = codegen_state.kernel
+        global_sizes, local_sizes = kernel.get_grid_sizes_for_insn_ids_as_exprs(
+            get_insn_ids_for_block_at(
+                codegen_state.kernel.linearization, schedule_index
+            ),
+            codegen_state.callables_table,
+        )
+
+
+        function_body=codegen_result.device_programs[0].ast
+        function_body = SYCLparallel_for(
+                    function_body,
+                    len(global_sizes),
+                    _SYCL_VARIABLE["handler"],
+                    _SYCL_VARIABLE["nd_item"],
+                )
+        codegen_result=codegen_result.with_new_ast(codegen_state,function_body)
+
+        return codegen_result
+    
     def get_function_definition(
         self,
         codegen_state: CodeGenerationState,
@@ -698,7 +704,6 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
     ) -> Generable:
         kernel = codegen_state.kernel
         assert kernel.linearization is not None
-
         from cgen import Block, FunctionBody, Initializer, Line
         from cgen import \
             Module as Collection  # Post-mid-2016 cgens have 'Collection', too.
@@ -736,19 +741,10 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                             decl,
                             generate_array_literal(codegen_state, tv, tv.initializer),
                         )
-
+                    
                     result.append(decl)
         kernel = codegen_state.kernel
-        from cgen.sycl import SYCLparallel_for, SYCLQueueSubmit
-
-        from loopy.schedule import get_insn_ids_for_block_at
-
-        global_sizes, local_sizes = kernel.get_grid_sizes_for_insn_ids_as_exprs(
-            get_insn_ids_for_block_at(
-                codegen_state.kernel.linearization, schedule_index
-            ),
-            codegen_state.callables_table,
-        )
+        from cgen.sycl import  SYCLQueueSubmit
 
         from loopy.schedule import CallKernel
 
@@ -774,18 +770,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             )
             if acc != None:
                 accessors.append(acc)
-
-        function_body = Block(
-            accessors
-            + [
-                SYCLparallel_for(
-                    function_body,
-                    len(global_sizes),
-                    _SYCL_VARIABLE["handler"],
-                    _SYCL_VARIABLE["nd_item"],
-                )
-            ]
-        )
+                function_body.insert(0,acc)
         function_body = Block(
             [SYCLQueueSubmit(function_body, _SYCL_VARIABLE["handler"])]
         )
@@ -817,7 +802,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
     def arg_to_cgen_declarator(
         self, kernel: LoopKernel, passed_name: str, is_written: bool
     ) -> Declarator:
-        from loopy.kernel.data import (AddressSpace, ArrayArg, ConstantArg,
+        from loopy.kernel.data import (ArrayArg, ConstantArg,
                                        ImageArg, TemporaryVariable, ValueArg)
 
         if passed_name in kernel.all_inames():
@@ -960,7 +945,6 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             ]
 
         return []
-
     # }}}
 
     def get_expression_to_c_expression_mapper(self, codegen_state):
@@ -983,7 +967,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
 
             from cgen import Statement
 
-            return Statement("group_barrier({}.get_group()){comment}".format(_SYCL_VARIABLE["nd_item"],comment))
+            return Statement("group_barrier({}.get_group()){}".format(_SYCL_VARIABLE["nd_item"],comment))
         elif synchronization_kind == "global":
             raise LoopyError("SYCL does not have global barriers")
         else:
@@ -994,12 +978,12 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
     def wrap_decl_for_address_space(
         self, decl: Declarator, address_space: AddressSpace
     ) -> Declarator:
-        from cgen.opencl import CLGlobal, CLLocal
+        from cgen.sycl import CLGlobal, SYCLLocal
 
         if address_space == AddressSpace.GLOBAL:
             return CLGlobal(decl)
         elif address_space == AddressSpace.LOCAL:
-            return CLLocal(decl)
+            return SYCLLocal(decl)
         elif address_space == AddressSpace.PRIVATE:
             return decl
         else:
@@ -1008,7 +992,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             )
 
     def wrap_global_constant(self, decl: Declarator) -> Declarator:
-        from cgen.opencl import CLConstant, CLGlobal
+        from cgen.sycl import CLConstant, CLGlobal
 
         assert isinstance(decl, CLGlobal)
         decl = decl.subdecl
@@ -1111,8 +1095,6 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             old_val_var = codegen_state.var_name_generator("loopy_old_val")
             new_val_var = codegen_state.var_name_generator("loopy_new_val")
 
-            from loopy.kernel.data import AddressSpace, TemporaryVariable
-
             ecm = codegen_state.expression_to_code_mapper.with_assignments(
                 {
                     old_val_var: TemporaryVariable(old_val_var, lhs_dtype, shape=()),
@@ -1154,7 +1136,6 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                 else:
                     raise AssertionError()
 
-                from loopy.kernel.data import ArrayArg, TemporaryVariable
 
                 if (
                     isinstance(lhs_var, ArrayArg)
