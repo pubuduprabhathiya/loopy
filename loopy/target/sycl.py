@@ -40,8 +40,12 @@ from loopy.kernel.data import AddressSpace, ImageArg, ConstantArg, ArrayArg
 from loopy.kernel.function_interface import ScalarCallable
 from loopy.codegen import CodeGenerationState
 from loopy.codegen.result import CodeGenerationResult
+from loopy.kernel.data import TemporaryVariable
 
-
+_SYCL_VARIABLE = {
+    "handler": "handler",
+    "nd_item": "item",
+}
 # {{{ dtype registry wrappers
 
 
@@ -471,10 +475,6 @@ def sycl_preamble_generator(preamble_info):
                 and dtype.numpy_dtype in [np.float64, np.complex128]):
             has_double = True
 
-    yield ("00", """
-        #include <CL/sycl.hpp>
-        """)
-
     from loopy.types import AtomicNumpyType
     seen_64_bit_atomics = any(
             isinstance(dtype, AtomicNumpyType) and dtype.numpy_dtype.itemsize == 8
@@ -687,13 +687,42 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                 get_insn_ids_for_block_at(
                     codegen_state.kernel.linearization, schedule_index),
                 codegen_state.callables_table)
-        function_body=Block([SYCLBody(function_body,len(global_sizes))])
+        function_body=Block([SYCLBody(function_body,len(global_sizes),_SYCL_VARIABLE["handler"],_SYCL_VARIABLE["nd_item"])])
         fbody = FunctionBody(function_decl, function_body)
         if not result:
             return fbody
         else:
             return Collection(result+[Line(), fbody])
 
+    def get_temporary_var_declarator(self,
+            codegen_state: CodeGenerationState,
+            temp_var: TemporaryVariable) -> Declarator:
+        import pymbolic.primitives as p
+        from pymbolic.mapper.stringifier import PREC_NONE
+
+        temp_var_decl = self.get_array_base_declarator(temp_var)
+
+        if temp_var.storage_shape:
+            shape = temp_var.storage_shape
+        else:
+            shape = temp_var.shape
+
+        assert isinstance(shape, tuple)
+        assert isinstance(temp_var.dim_tags, tuple)
+
+        from loopy.kernel.array import drop_vec_dims
+        unvec_shape = drop_vec_dims(temp_var.dim_tags, shape)
+
+        if unvec_shape:
+            from cgen.sycl import SYCLAccessor
+            ecm = self.get_expression_to_code_mapper(codegen_state)
+            temp_var_decl = SYCLAccessor(temp_var_decl,_SYCL_VARIABLE["handler"],
+                    ecm(p.flattened_product(unvec_shape),
+                        prec=PREC_NONE, type_context="i"))
+
+
+        return self.wrap_decl_for_address_space(temp_var_decl,
+                temp_var.address_space)
 
     def get_function_declaration(
             self, codegen_state: CodeGenerationState,
@@ -811,11 +840,11 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
 
     def wrap_decl_for_address_space(
             self, decl: Declarator, address_space: AddressSpace) -> Declarator:
-        from cgen.opencl import CLGlobal, CLLocal
+        from cgen.sycl import CLGlobal, SYCLLocal
         if address_space == AddressSpace.GLOBAL:
             return CLGlobal(decl)
         elif address_space == AddressSpace.LOCAL:
-            return CLLocal(decl)
+            return SYCLLocal(decl)
         elif address_space == AddressSpace.PRIVATE:
             return decl
         else:
