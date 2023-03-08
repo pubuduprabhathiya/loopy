@@ -525,7 +525,7 @@ class ExpressionToSYCLCExpressionMapper(ExpressionToCExpressionMapper):
         return super().wrap_in_typecast_lazy(actual_dtype, needed_dtype, s)
 
     def map_group_hw_index(self, expr, type_context):
-        return var("item.get_global_id")(expr.axis)
+        return var("item.get_group")(expr.axis)
 
     def map_local_hw_index(self, expr, type_context):
         return var("item.get_local_id")(expr.axis)
