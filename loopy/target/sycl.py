@@ -703,14 +703,6 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         from loopy.kernel.array import drop_vec_dims
         unvec_shape = drop_vec_dims(temp_var.dim_tags, shape)
 
-        if unvec_shape:
-            from cgen.sycl import SYCLAccessor
-            ecm = self.get_expression_to_code_mapper(codegen_state)
-            temp_var_decl = SYCLAccessor(temp_var_decl,_SYCL_VARIABLE["handler"],
-                    ecm(p.flattened_product(unvec_shape),
-                        prec=PREC_NONE, type_context="i"))
-
-
         return self.wrap_decl_for_address_space(temp_var_decl,
                 temp_var.address_space)
 
@@ -830,9 +822,9 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
 
     def wrap_decl_for_address_space(
             self, decl: Declarator, address_space: AddressSpace) -> Declarator:
-        from cgen.sycl import CLGlobal, SYCLLocal
+        from cgen.sycl import SYCLGlobal, SYCLLocal
         if address_space == AddressSpace.GLOBAL:
-            return CLGlobal(decl)
+            return SYCLGlobal(decl)
         elif address_space == AddressSpace.LOCAL:
             return SYCLLocal(decl)
         elif address_space == AddressSpace.PRIVATE:
@@ -842,11 +834,11 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                     % address_space)
 
     def wrap_global_constant(self, decl: Declarator) -> Declarator:
-        from cgen.sycl import CLGlobal, CLConstant
-        assert isinstance(decl, CLGlobal)
+        from cgen.sycl import SYCLConstant
+        assert isinstance(decl, SYCLGlobal)
         decl = decl.subdecl
 
-        return CLConstant(decl)
+        return SYCLConstant(decl)
 
     # duplicated in CUDA, update there if updating here
     def get_array_base_declarator(self, ary: ArrayBase) -> Declarator:
