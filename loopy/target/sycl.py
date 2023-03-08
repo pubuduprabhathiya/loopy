@@ -485,17 +485,7 @@ def sycl_preamble_generator(preamble_info):
         yield ("00_enable_64bit_atomics", """
             #pragma SYCL EXTENSION cl_khr_int64_base_atomics : enable
             """)
-
-    from loopy.tools import remove_common_indentation
-    kernel = preamble_info.kernel
-
-    # yield ("00_declare_gid_lid",
-    #         remove_common_indentation("""
-    #             #define lid(item,N) ((%(idx_ctype)s) item.get_local_id(N))
-    #             #define gid(item,N) ((%(idx_ctype)s) item.get_global_id(N))
-    #             """ % dict(idx_ctype=kernel.target.dtype_to_typename(
-    #                 kernel.index_dtype))))
-
+    
     for func in preamble_info.seen_functions:
         if func.name == "pow" and func.c_name == "powf32":
             yield ("08_clpowf32", """
@@ -830,7 +820,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             mem_kind = mem_kind.upper()
 
             from cgen import Statement
-            return Statement(f"barrier(CLK_{mem_kind}_MEM_FENCE){comment}")
+            return Statement("group_barrier({}.get_group()){}".format(_SYCL_VARIABLE["nd_item"],comment))
         elif synchronization_kind == "global":
             raise LoopyError("SYCL does not have global barriers")
         else:
@@ -852,7 +842,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                     % address_space)
 
     def wrap_global_constant(self, decl: Declarator) -> Declarator:
-        from cgen.opencl import CLGlobal, CLConstant
+        from cgen.sycl import CLGlobal, CLConstant
         assert isinstance(decl, CLGlobal)
         decl = decl.subdecl
 
