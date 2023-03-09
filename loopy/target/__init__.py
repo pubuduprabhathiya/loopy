@@ -216,9 +216,6 @@ class ASTBuilderBase(Generic[ASTType]):
             schedule_index: int) -> ASTType:
         raise NotImplementedError
 
-    def get_code_gen_result(self,codegen_state: CodeGenerationState, codegen_result: CodeGenerationResult, schedule_index: int) -> CodeGenerationResult:
-        return codegen_result
-
     def get_kernel_call(self, codegen_state: CodeGenerationState,
             subkernel_name: str,
             gsize: Tuple[ExpressionT, ...],
