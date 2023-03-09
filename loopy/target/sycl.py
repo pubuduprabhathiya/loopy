@@ -45,6 +45,8 @@ from loopy.kernel.data import TemporaryVariable
 _SYCL_VARIABLE = {
     "handler": "handler",
     "nd_item": "item",
+    "nd_range": "range_",
+    "queue": "queue_",
 }
 # {{{ dtype registry wrappers
 
@@ -677,7 +679,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                 get_insn_ids_for_block_at(
                     codegen_state.kernel.linearization, schedule_index),
                 codegen_state.callables_table)
-        function_body=Block([SYCLBody(function_body,len(global_sizes),_SYCL_VARIABLE["handler"],_SYCL_VARIABLE["nd_item"])])
+        function_body=Block([SYCLBody(function_body,len(global_sizes),_SYCL_VARIABLE["handler"],_SYCL_VARIABLE["nd_item"],_SYCL_VARIABLE["queue"],_SYCL_VARIABLE["nd_range"])])
         fbody = FunctionBody(function_decl, function_body)
         if not result:
             return fbody
@@ -762,7 +764,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                 get_insn_ids_for_block_at(
                     codegen_state.kernel.linearization, schedule_index),
                 codegen_state.callables_table)
-        fdecl = SYCLKernel(fdecl,len(global_size))
+        fdecl = SYCLKernel(fdecl,len(global_size),_SYCL_VARIABLE["nd_range"],_SYCL_VARIABLE["queue"])
         return fdecl
     def required_work_grop_size( self, codegen_state: CodeGenerationState, schedule_index: int,preambles):
         from cgen.sycl import SYCLRequiredWorkGroupSize
@@ -863,13 +865,12 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         return POD(self, dtype, ary.name)
 
     def get_constant_arg_declarator(self, arg: ConstantArg) -> Declarator:
-        from cgen import RestrictPointer
-        from cgen.opencl import CLConstant
+        from cgen.sycl import SYCLConstant
 
-        # constant *is* an address space as far as CL is concerned, do not re-wrap
-        return CLConstant(RestrictPointer(self.get_array_base_declarator(
-                arg)))
+        return SYCLConstant(self.get_array_base_declarator(
+                arg))
 
+    # TODO sycl Image
     def get_image_arg_declarator(
             self, arg: ImageArg, is_written: bool) -> Declarator:
         if is_written:
@@ -877,8 +878,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         else:
             mode = "r"
 
-        from cgen.opencl import CLImage
-        return CLImage(arg.num_target_axes(), mode, arg.name)
+        from cgen.sycl import SYCLImage
+        return SYCLImage(arg.num_target_axes(), mode, arg.name)
 
     # }}}
 
