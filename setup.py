@@ -91,7 +91,7 @@ setup(name="loopy",
           # https://github.com/inducer/loopy/pull/419
           "numpy>=1.19",
 
-          "cgen>=2016.1",
+          "cgen @ git+https://github.com/pubuduprabhathiya/cgen.git@sycl#egg=cgen",
           "islpy>=2019.1",
           "codepy>=2017.1",
           "colorama",
