@@ -1,6 +1,3 @@
-"""SYCL target independent of PySYCL."""
-
-
 __copyright__ = "Copyright (C) 2015 Andreas Kloeckner"
 
 __license__ = """
@@ -23,28 +20,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from typing import cast,Tuple, Sequence
+from typing import Sequence, Tuple, cast
 
 import numpy as np
+from cgen import Const, Declarator, Generable
 from pymbolic import var
 from pytools import memoize_method
-from cgen import Declarator, Generable, Const
 
-from loopy.target.c import CFamilyTarget, CFamilyASTBuilder
-from loopy.target.c.codegen.expression import ExpressionToCExpressionMapper
-from loopy.diagnostic import LoopyError, LoopyTypeError
-from loopy.types import NumpyType
-from loopy.target.c import DTypeRegistryWrapper
-from loopy.kernel.array import VectorArrayDimTag, FixedStrideArrayDimTag, ArrayBase
-from loopy.kernel.data import AddressSpace, ImageArg, ConstantArg, ArrayArg
-from loopy.kernel.function_interface import ScalarCallable
 from loopy.codegen import CodeGenerationState
 from loopy.codegen.result import CodeGenerationResult
-from loopy.kernel.data import TemporaryVariable
+from loopy.diagnostic import LoopyError, LoopyTypeError
+from loopy.kernel.array import ArrayBase, FixedStrideArrayDimTag, VectorArrayDimTag
+from loopy.kernel.data import (
+    AddressSpace,
+    ArrayArg,
+    ConstantArg,
+    ImageArg,
+    TemporaryVariable,
+)
+from loopy.kernel.function_interface import ScalarCallable
+from loopy.target.c import CFamilyASTBuilder, CFamilyTarget, DTypeRegistryWrapper
+from loopy.target.c.codegen.expression import ExpressionToCExpressionMapper
+from loopy.types import NumpyType
 
 _SYCL_VARIABLE = {
     "handler": "handler",
     "nd_item": "item",
+    "nd_range": "range_",
+    "queue": "queue_",
 }
 # {{{ dtype registry wrappers
 
@@ -58,11 +61,12 @@ class DTypeRegistryWrapperWithInt8ForBool(DTypeRegistryWrapper):
         This sub-class is needed because compyte's type registry does
         not support type aliases.
     """
+
     def dtype_to_ctype(self, dtype):
         from loopy.types import NumpyType
+
         if isinstance(dtype, NumpyType) and dtype.dtype == np.bool8:
-            return self.wrapped_registry.dtype_to_ctype(
-                    NumpyType(np.int8))
+            return self.wrapped_registry.dtype_to_ctype(NumpyType(np.int8))
         return self.wrapped_registry.dtype_to_ctype(dtype)
 
 
@@ -70,9 +74,11 @@ class DTypeRegistryWrapperWithAtomics(DTypeRegistryWrapper):
     def get_or_register_dtype(self, names, dtype=None):
         if dtype is not None:
             from loopy.types import AtomicNumpyType, NumpyType
+
             if isinstance(dtype, AtomicNumpyType):
                 return self.wrapped_registry.get_or_register_dtype(
-                        names, NumpyType(dtype.dtype))
+                    names, NumpyType(dtype.dtype)
+                )
 
         return self.wrapped_registry.get_or_register_dtype(names, dtype)
 
@@ -86,10 +92,12 @@ class DTypeRegistryWrapperWithCL1Atomics(DTypeRegistryWrapperWithAtomics):
         else:
             return self.wrapped_registry.dtype_to_ctype(dtype)
 
+
 # }}}
 
 
 # {{{ vector types
+
 
 class vec:  # noqa
     pass
@@ -105,17 +113,17 @@ def _create_vector_types():
     counts = [2, 3, 4, 8, 16]
 
     for base_name, base_type in [
-            ("char", np.int8),
-            ("uchar", np.uint8),
-            ("short", np.int16),
-            ("ushort", np.uint16),
-            ("int", np.int32),
-            ("uint", np.uint32),
-            ("long", np.int64),
-            ("ulong", np.uint64),
-            ("float", np.float32),
-            ("double", np.float64),
-            ]:
+        ("char", np.int8),
+        ("uchar", np.uint8),
+        ("short", np.int16),
+        ("ushort", np.uint16),
+        ("int", np.int32),
+        ("uint", np.uint32),
+        ("long", np.int64),
+        ("ulong", np.uint64),
+        ("float", np.float32),
+        ("double", np.float64),
+    ]:
         for count in counts:
             name = "%s%d" % (base_name, count)
 
@@ -127,23 +135,24 @@ def _create_vector_types():
 
             names = ["s%d" % i for i in range(count)]
             while len(names) < padded_count:
-                names.append("padding%d" % (len(names)-count))
+                names.append("padding%d" % (len(names) - count))
 
             if len(titles) < len(names):
-                titles.extend((len(names)-len(titles))*[None])
+                titles.extend((len(names) - len(titles)) * [None])
 
             try:
-                dtype = np.dtype(dict(
-                    names=names,
-                    formats=[base_type]*padded_count,
-                    titles=titles))
+                dtype = np.dtype(
+                    dict(names=names, formats=[base_type] * padded_count, titles=titles)
+                )
             except NotImplementedError:
                 try:
-                    dtype = np.dtype([((n, title), base_type)
-                                      for (n, title) in zip(names, titles)])
+                    dtype = np.dtype(
+                        [((n, title), base_type) for (n, title) in zip(names, titles)]
+                    )
                 except TypeError:
-                    dtype = np.dtype([(n, base_type) for (n, title)
-                                      in zip(names, titles)])
+                    dtype = np.dtype(
+                        [(n, base_type) for (n, title) in zip(names, titles)]
+                    )
 
             setattr(vec, name, dtype)
 
@@ -160,34 +169,35 @@ def _register_vector_types(dtype_registry):
     for name, dtype in vec.names_and_dtypes:
         dtype_registry.get_or_register_dtype(name, dtype)
 
+
 # }}}
 
 
 # {{{ function mangler
 
 _CL_SIMPLE_MULTI_ARG_FUNCTIONS = {
-        "rsqrt": 1,
-        "clamp": 3,
-        "atan2": 2,
-        }
+    "rsqrt": 1,
+    "clamp": 3,
+    "atan2": 2,
+}
 
 
 VECTOR_LITERAL_FUNCS = {
-        "make_%s%d" % (name, count): (name, dtype, count)
-        for name, dtype in [
-            ("char", np.int8),
-            ("uchar", np.uint8),
-            ("short", np.int16),
-            ("ushort", np.uint16),
-            ("int", np.int32),
-            ("uint", np.uint32),
-            ("long", np.int64),
-            ("ulong", np.uint64),
-            ("float", np.float32),
-            ("double", np.float64),
-            ]
-        for count in [2, 3, 4, 8, 16]
-        }
+    "make_%s%d" % (name, count): (name, dtype, count)
+    for name, dtype in [
+        ("char", np.int8),
+        ("uchar", np.uint8),
+        ("short", np.int16),
+        ("ushort", np.uint16),
+        ("int", np.int32),
+        ("uint", np.uint32),
+        ("long", np.int64),
+        ("ulong", np.uint64),
+        ("float", np.float32),
+        ("double", np.float64),
+    ]
+    for count in [2, 3, 4, 8, 16]
+}
 
 
 class SYCLCallable(ScalarCallable):
@@ -206,38 +216,56 @@ class SYCLCallable(ScalarCallable):
                     raise LoopyError(f"'{name}' can take only one argument.")
 
             if 0 not in arg_id_to_dtype or arg_id_to_dtype[0] is None:
-                return (
-                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
-                        callables_table)
+                return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
 
             dtype = arg_id_to_dtype[0].numpy_dtype
 
             if dtype.kind in ("u", "i"):
-                # SYCL C 2.2, Section 6.13.3: abs returns *u*gentype
                 from loopy.types import to_unsigned_dtype
-                return (self.copy(name_in_target=name,
-                            arg_id_to_dtype={
-                                0: NumpyType(dtype),
-                                -1: NumpyType(to_unsigned_dtype(dtype))}),
-                        callables_table)
+
+                return (
+                    self.copy(
+                        name_in_target=name,
+                        arg_id_to_dtype={
+                            0: NumpyType(dtype),
+                            -1: NumpyType(to_unsigned_dtype(dtype)),
+                        },
+                    ),
+                    callables_table,
+                )
             elif dtype.kind == "f":
                 name = "fabs"
             else:
                 raise LoopyTypeError(f"'{name}' does not support type {dtype}")
 
         # deliberately not elif: abs branch above may end up taking this.
-        if name in ["fabs", "acos", "asin", "atan", "cos", "cosh", "sin", "sinh",
-                    "tan", "tanh", "exp", "log", "log10", "sqrt", "ceil", "floor",
-                    "erf", "erfc"]:
+        if name in [
+            "fabs",
+            "acos",
+            "asin",
+            "atan",
+            "cos",
+            "cosh",
+            "sin",
+            "sinh",
+            "tan",
+            "tanh",
+            "exp",
+            "log",
+            "log10",
+            "sqrt",
+            "ceil",
+            "floor",
+            "erf",
+            "erfc",
+        ]:
 
             for id in arg_id_to_dtype:
                 if not -1 <= id <= 0:
                     raise LoopyError(f"'{name}' can take only one argument.")
 
             if 0 not in arg_id_to_dtype or arg_id_to_dtype[0] is None:
-                return (
-                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
-                        callables_table)
+                return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
 
             dtype = arg_id_to_dtype[0]
             dtype = dtype.numpy_dtype
@@ -249,10 +277,12 @@ class SYCLCallable(ScalarCallable):
                 raise LoopyTypeError(f"{name} does not support type {dtype}")
 
             return (
-                    self.copy(name_in_target=name,
-                        arg_id_to_dtype={0: NumpyType(dtype), -1:
-                            NumpyType(dtype)}),
-                    callables_table)
+                self.copy(
+                    name_in_target=name,
+                    arg_id_to_dtype={0: NumpyType(dtype), -1: NumpyType(dtype)},
+                ),
+                callables_table,
+            )
 
         # }}}
 
@@ -261,75 +291,90 @@ class SYCLCallable(ScalarCallable):
 
             for id in arg_id_to_dtype:
                 if not -1 <= id <= 1:
-                    #FIXME: Do we need to raise here?:
+                    # FIXME: Do we need to raise here?:
                     #   The pattern we generally follow is that if we don't find
                     #   a function, then we just return None
                     raise LoopyError("%s can take only two arguments." % name)
 
-            if 0 not in arg_id_to_dtype or 1 not in arg_id_to_dtype or (
-                    arg_id_to_dtype[0] is None or arg_id_to_dtype[1] is None):
-                return (
-                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
-                        callables_table)
+            if (
+                0 not in arg_id_to_dtype
+                or 1 not in arg_id_to_dtype
+                or (arg_id_to_dtype[0] is None or arg_id_to_dtype[1] is None)
+            ):
+                return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
 
             dtype = np.find_common_type(
-                [], [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items()
-                     if id >= 0])
+                [],
+                [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items() if id >= 0],
+            )
 
             if dtype.kind == "c":
                 raise LoopyTypeError(f"'{name}' does not support complex numbers")
 
             dtype = NumpyType(dtype)
             return (
-                    self.copy(name_in_target=name,
-                        arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}),
-                    callables_table)
+                self.copy(
+                    name_in_target=name, arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}
+                ),
+                callables_table,
+            )
 
         elif name in ["max", "min"]:
             for id in arg_id_to_dtype:
                 if not -1 <= id <= 1:
                     raise LoopyError("%s can take only 2 arguments." % name)
             if 0 not in arg_id_to_dtype or 1 not in arg_id_to_dtype:
-                return (
-                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
-                        callables_table)
+                return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
             common_dtype = np.find_common_type(
-                    [], [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items()
-                        if (id >= 0 and dtype is not None)])
+                [],
+                [
+                    dtype.numpy_dtype
+                    for id, dtype in arg_id_to_dtype.items()
+                    if (id >= 0 and dtype is not None)
+                ],
+            )
 
             if common_dtype.kind in ["u", "i", "f"]:
                 if common_dtype.kind == "f":
-                    name = "f"+name
+                    name = "f" + name
 
                 dtype = NumpyType(common_dtype)
                 return (
-                        self.copy(name_in_target=name,
-                            arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}),
-                        callables_table)
+                    self.copy(
+                        name_in_target=name,
+                        arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype},
+                    ),
+                    callables_table,
+                )
             else:
                 # Unsupported type.
-                raise LoopyError("%s function not supported for the types %s" %
-                        (name, common_dtype))
+                raise LoopyError(
+                    "%s function not supported for the types %s" % (name, common_dtype)
+                )
 
         elif name == "dot":
             for id in arg_id_to_dtype:
                 if not -1 <= id <= 1:
                     raise LoopyError(f"'{name}' can take only 2 arguments.")
 
-            if 0 not in arg_id_to_dtype or 1 not in arg_id_to_dtype or (
-                    arg_id_to_dtype[0] is None or arg_id_to_dtype[1] is None):
+            if (
+                0 not in arg_id_to_dtype
+                or 1 not in arg_id_to_dtype
+                or (arg_id_to_dtype[0] is None or arg_id_to_dtype[1] is None)
+            ):
                 # the types provided aren't mature enough to specialize the
                 # callable
-                return (
-                        self.copy(arg_id_to_dtype=arg_id_to_dtype),
-                        callables_table)
+                return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
 
             dtype = arg_id_to_dtype[0]
             scalar_dtype, offset, field_name = dtype.numpy_dtype.fields["s0"]
             return (
-                    self.copy(name_in_target=name, arg_id_to_dtype={-1:
-                        NumpyType(scalar_dtype), 0: dtype, 1: dtype}),
-                    callables_table)
+                self.copy(
+                    name_in_target=name,
+                    arg_id_to_dtype={-1: NumpyType(scalar_dtype), 0: dtype, 1: dtype},
+                ),
+                callables_table,
+            )
 
         elif name == "pow":
             for id in arg_id_to_dtype:
@@ -337,8 +382,13 @@ class SYCLCallable(ScalarCallable):
                     raise LoopyError(f"'{name}' can take only 2 arguments.")
 
             common_dtype = np.find_common_type(
-                    [], [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items()
-                        if (id >= 0 and dtype is not None)])
+                [],
+                [
+                    dtype.numpy_dtype
+                    for id, dtype in arg_id_to_dtype.items()
+                    if (id >= 0 and dtype is not None)
+                ],
+            )
 
             if common_dtype == np.float64:
                 name = "powf64"
@@ -350,73 +400,79 @@ class SYCLCallable(ScalarCallable):
             result_dtype = NumpyType(common_dtype)
 
             return (
-                    self.copy(name_in_target=name,
-                              arg_id_to_dtype={-1: result_dtype,
-                                               0: common_dtype, 1: common_dtype}),
-                    callables_table)
+                self.copy(
+                    name_in_target=name,
+                    arg_id_to_dtype={
+                        -1: result_dtype,
+                        0: common_dtype,
+                        1: common_dtype,
+                    },
+                ),
+                callables_table,
+            )
 
         elif name in _CL_SIMPLE_MULTI_ARG_FUNCTIONS:
             num_args = _CL_SIMPLE_MULTI_ARG_FUNCTIONS[name]
             for id in arg_id_to_dtype:
                 if not -1 <= id < num_args:
-                    raise LoopyError("%s can take only %d arguments." % (name,
-                            num_args))
+                    raise LoopyError(
+                        "%s can take only %d arguments." % (name, num_args)
+                    )
 
             for i in range(num_args):
                 if i not in arg_id_to_dtype or arg_id_to_dtype[i] is None:
                     # the types provided aren't mature enough to specialize the
                     # callable
-                    return (
-                            self.copy(arg_id_to_dtype=arg_id_to_dtype),
-                            callables_table)
+                    return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
 
             dtype = np.find_common_type(
-                    [], [dtype.numpy_dtype for id, dtype in
-                        arg_id_to_dtype.items() if id >= 0])
+                [],
+                [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items() if id >= 0],
+            )
 
             if dtype.kind == "c":
-                raise LoopyError("%s does not support complex numbers"
-                        % name)
+                raise LoopyError("%s does not support complex numbers" % name)
 
-            updated_arg_id_to_dtype = {id: NumpyType(dtype) for id in range(-1,
-                num_args)}
+            updated_arg_id_to_dtype = {
+                id: NumpyType(dtype) for id in range(-1, num_args)
+            }
 
             return (
-                    self.copy(name_in_target=name,
-                        arg_id_to_dtype=updated_arg_id_to_dtype),
-                    callables_table)
+                self.copy(name_in_target=name, arg_id_to_dtype=updated_arg_id_to_dtype),
+                callables_table,
+            )
 
         elif name in VECTOR_LITERAL_FUNCS:
             base_tp_name, dtype, count = VECTOR_LITERAL_FUNCS[name]
 
             for id in arg_id_to_dtype:
                 if not -1 <= id < count:
-                    raise LoopyError("%s can take only %d arguments." % (name,
-                            num_args))
+                    raise LoopyError(
+                        "%s can take only %d arguments." % (name, num_args)
+                    )
 
             for i in range(count):
                 if i not in arg_id_to_dtype or arg_id_to_dtype[i] is None:
                     # the types provided aren't mature enough to specialize the
                     # callable
-                    return (
-                            self.copy(arg_id_to_dtype=arg_id_to_dtype),
-                            callables_table)
+                    return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
 
-            updated_arg_id_to_dtype = {id: NumpyType(dtype) for id in
-                    range(count)}
+            updated_arg_id_to_dtype = {id: NumpyType(dtype) for id in range(count)}
             updated_arg_id_to_dtype[-1] = SYCLTarget().vector_dtype(
-                        NumpyType(dtype), count)
+                NumpyType(dtype), count
+            )
 
             return (
-                    self.copy(name_in_target="(%s%d) " % (base_tp_name, count),
-                        arg_id_to_dtype=updated_arg_id_to_dtype),
-                    callables_table)
+                self.copy(
+                    name_in_target="(%s%d) " % (base_tp_name, count),
+                    arg_id_to_dtype=updated_arg_id_to_dtype,
+                ),
+                callables_table,
+            )
 
         # does not satisfy any of the conditions needed for specialization.
         # hence just returning a copy of the callable.
-        return (
-                self.copy(arg_id_to_dtype=arg_id_to_dtype),
-                callables_table)
+        return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
 
 
 def get_sycl_callables():
@@ -425,20 +481,49 @@ def get_sycl_callables():
     *identifier* is known in SYCL.
     """
     sycl_function_ids = (
-            {"max", "min", "dot", "pow", "abs", "acos", "asin",
-            "atan", "cos", "cosh", "sin", "sinh", "pow", "atan2", "tanh", "exp",
-            "log", "log10", "sqrt", "ceil", "floor", "max", "min", "fmax", "fmin",
-            "fabs", "tan", "erf", "erfc"}
-            | set(_CL_SIMPLE_MULTI_ARG_FUNCTIONS)
-            | set(VECTOR_LITERAL_FUNCS))
+        {
+            "max",
+            "min",
+            "dot",
+            "pow",
+            "abs",
+            "acos",
+            "asin",
+            "atan",
+            "cos",
+            "cosh",
+            "sin",
+            "sinh",
+            "pow",
+            "atan2",
+            "tanh",
+            "exp",
+            "log",
+            "log10",
+            "sqrt",
+            "ceil",
+            "floor",
+            "max",
+            "min",
+            "fmax",
+            "fmin",
+            "fabs",
+            "tan",
+            "erf",
+            "erfc",
+        }
+        | set(_CL_SIMPLE_MULTI_ARG_FUNCTIONS)
+        | set(VECTOR_LITERAL_FUNCS)
+    )
 
-    return {id_: SYCLCallable(name=id_) for id_ in
-        sycl_function_ids}
+    return {id_: SYCLCallable(name=id_) for id_ in sycl_function_ids}
+
 
 # }}}
 
 
 # {{{ symbol mangler
+
 
 def sycl_symbol_mangler(kernel, name):
     # FIXME: should be more picky about exact names
@@ -462,54 +547,63 @@ def sycl_symbol_mangler(kernel, name):
     else:
         return None
 
+
 # }}}
 
 
 # {{{ preamble generator
 
-def sycl_preamble_generator(preamble_info):
-    has_double = False
 
-    for dtype in preamble_info.seen_dtypes:
-        if (isinstance(dtype, NumpyType)
-                and dtype.numpy_dtype in [np.float64, np.complex128]):
-            has_double = True
+def sycl_preamble_generator(preamble_info):
 
     from loopy.types import AtomicNumpyType
+
     seen_64_bit_atomics = any(
-            isinstance(dtype, AtomicNumpyType) and dtype.numpy_dtype.itemsize == 8
-            for dtype in preamble_info.seen_atomic_dtypes)
+        isinstance(dtype, AtomicNumpyType) and dtype.numpy_dtype.itemsize == 8
+        for dtype in preamble_info.seen_atomic_dtypes
+    )
 
     if seen_64_bit_atomics:
         # FIXME: Should gate on "CL1" atomics style
-        yield ("00_enable_64bit_atomics", """
+        yield (
+            "00_enable_64bit_atomics",
+            """
             #pragma SYCL EXTENSION cl_khr_int64_base_atomics : enable
-            """)
-    
+            """,
+        )
+
     for func in preamble_info.seen_functions:
         if func.name == "pow" and func.c_name == "powf32":
-            yield ("08_clpowf32", """
+            yield (
+                "08_clpowf32",
+                """
                 inline float powf32(float x, float y) {
                 return pow(x, y);
-                }""")
+                }""",
+            )
 
         if func.name == "pow" and func.c_name == "powf64":
-            yield ("08_clpowf64", """
+            yield (
+                "08_clpowf64",
+                """
                 inline double powf64(double x, double y) {
                 return pow(x, y);
-                }""")
+                }""",
+            )
+
 
 # }}}
 
 
 # {{{ expression mapper
 
-class ExpressionToSYCLCExpressionMapper(ExpressionToCExpressionMapper):
 
+class ExpressionToSYCLCExpressionMapper(ExpressionToCExpressionMapper):
     def wrap_in_typecast_lazy(self, actual_dtype, needed_dtype, s):
         if needed_dtype.dtype.kind == "b" and actual_dtype().dtype.kind == "f":
             # CL does not perform implicit conversion from float-type to a bool.
             from pymbolic.primitives import Comparison
+
             return Comparison(s, "!=", 0)
 
         return super().wrap_in_typecast_lazy(actual_dtype, needed_dtype, s)
@@ -520,25 +614,17 @@ class ExpressionToSYCLCExpressionMapper(ExpressionToCExpressionMapper):
     def map_local_hw_index(self, expr, type_context):
         return var("item.get_local_id")(expr.axis)
 
+
 # }}}
 
 
 # {{{ target
 
+
 class SYCLTarget(CFamilyTarget):
-    """A target for the SYCL C heterogeneous compute programming language.
-    """
+    """A target for the SYCL C heterogeneous compute programming language."""
 
     def __init__(self, atomics_flavor=None, use_int8_for_bool=True):
-        """
-        :arg atomics_flavor: one of ``"cl1"`` (C11-style atomics from SYCL 2.0),
-            ``"cl1"`` (SYCL 1.1 atomics, using bit-for-bit compare-and-swap
-            for floating point), ``"cl1-exch"`` (SYCL 1.1 atomics, using
-            double-exchange for floating point--not yet supported).
-        :arg use_int8_for_bool: Size of *bool* is undefined as per
-            SYCL spec, if *True* all bool8 variables would be treated
-            as int8's.
-        """
         super().__init__()
 
         if atomics_flavor is None:
@@ -558,13 +644,13 @@ class SYCLTarget(CFamilyTarget):
 
     @memoize_method
     def get_dtype_registry(self):
-        from loopy.target.c.compyte.dtypes import (DTypeRegistry,
-                fill_registry_with_opencl_c_types)
+        from loopy.target.c.compyte.dtypes import (
+            DTypeRegistry,
+            fill_registry_with_opencl_c_types,
+        )
 
         result = DTypeRegistry()
         fill_registry_with_opencl_c_types(result)
-
-        # no complex number support--needs PySYCLTarget
 
         _register_vector_types(result)
 
@@ -579,16 +665,19 @@ class SYCLTarget(CFamilyTarget):
         return result
 
     def is_vector_dtype(self, dtype):
-        return (isinstance(dtype, NumpyType)
-                and dtype.numpy_dtype in list(vec.types.values()))
+        return isinstance(dtype, NumpyType) and dtype.numpy_dtype in list(
+            vec.types.values()
+        )
 
     def vector_dtype(self, base, count):
         return NumpyType(vec.types[base.numpy_dtype, count])
+
 
 # }}}
 
 
 # {{{ ast builder
+
 
 class SYCLCASTBuilder(CFamilyASTBuilder):
     # {{{ library
@@ -600,23 +689,18 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         return callables
 
     def symbol_manglers(self):
-        return (
-                super().symbol_manglers() + [
-                    sycl_symbol_mangler
-                    ])
+        return super().symbol_manglers() + [sycl_symbol_mangler]
 
     def preamble_generators(self):
 
-        return (
-                super().preamble_generators() + [
-                    sycl_preamble_generator])
+        return super().preamble_generators() + [sycl_preamble_generator]
 
     # }}}
 
     # {{{ top-level codegen
-    def get_array_arg_declarator(
-            self, arg: ArrayArg, is_written: bool) -> Declarator:
+    def get_array_arg_declarator(self, arg: ArrayArg, is_written: bool) -> Declarator:
         from cgen import Pointer
+
         arg_decl = Pointer(self.get_array_base_declarator(arg))
 
         if not is_written:
@@ -624,27 +708,27 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         return arg_decl
 
     def get_function_definition(
-            self, codegen_state: CodeGenerationState,
-            codegen_result: CodeGenerationResult,
-            schedule_index: int, function_decl: Generable, function_body: Generable
-            ) -> Generable:
+        self,
+        codegen_state: CodeGenerationState,
+        codegen_result: CodeGenerationResult,
+        schedule_index: int,
+        function_decl: Generable,
+        function_body: Generable,
+    ) -> Generable:
         kernel = codegen_state.kernel
         assert kernel.linearization is not None
 
+        from cgen import Block, FunctionBody, Initializer, Line
         from cgen import (
-                FunctionBody,
-                Block,
-
-                # Post-mid-2016 cgens have 'Collection', too.
-                Module as Collection,
-                Initializer,
-                Line)
+            Module as Collection,
+        )  # Post-mid-2016 cgens have 'Collection', too.
 
         result = []
 
         from loopy.kernel.data import AddressSpace
         from loopy.schedule import CallKernel
         from loopy.target.c import generate_array_literal
+
         # We only need to write declarations for global variables with
         # the first device program. `is_first_dev_prog` determines
         # whether this is the first device program in the schedule.
@@ -655,40 +739,57 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                 break
         if is_first_dev_prog:
             for tv in sorted(
-                    kernel.temporary_variables.values(),
-                    key=lambda key_tv: key_tv.name):
+                kernel.temporary_variables.values(), key=lambda key_tv: key_tv.name
+            ):
 
                 if tv.address_space == AddressSpace.GLOBAL and (
-                        tv.initializer is not None):
+                    tv.initializer is not None
+                ):
                     assert tv.read_only
 
                     decl = self.wrap_global_constant(
-                            self.get_temporary_var_declarator(codegen_state, tv))
+                        self.get_temporary_var_declarator(codegen_state, tv)
+                    )
 
                     if tv.initializer is not None:
-                        decl = Initializer(decl, generate_array_literal(
-                            codegen_state, tv, tv.initializer))
+                        decl = Initializer(
+                            decl,
+                            generate_array_literal(codegen_state, tv, tv.initializer),
+                        )
 
                     result.append(decl)
         from cgen.sycl import SYCLBody
+
         kernel = codegen_state.kernel
         from loopy.schedule import get_insn_ids_for_block_at
+
         global_sizes, local_sizes = kernel.get_grid_sizes_for_insn_ids_as_exprs(
-                get_insn_ids_for_block_at(
-                    codegen_state.kernel.linearization, schedule_index),
-                codegen_state.callables_table)
-        function_body=Block([SYCLBody(function_body,len(global_sizes),_SYCL_VARIABLE["handler"],_SYCL_VARIABLE["nd_item"])])
+            get_insn_ids_for_block_at(
+                codegen_state.kernel.linearization, schedule_index
+            ),
+            codegen_state.callables_table,
+        )
+        function_body = Block(
+            [
+                SYCLBody(
+                    function_body,
+                    len(global_sizes),
+                    _SYCL_VARIABLE["handler"],
+                    _SYCL_VARIABLE["nd_item"],
+                    _SYCL_VARIABLE["queue"],
+                    _SYCL_VARIABLE["nd_range"],
+                )
+            ]
+        )
         fbody = FunctionBody(function_decl, function_body)
         if not result:
             return fbody
         else:
-            return Collection(result+[Line(), fbody])
+            return Collection(result + [Line(), fbody])
 
-    def get_temporary_var_declarator(self,
-            codegen_state: CodeGenerationState,
-            temp_var: TemporaryVariable) -> Declarator:
-        import pymbolic.primitives as p
-        from pymbolic.mapper.stringifier import PREC_NONE
+    def get_temporary_var_declarator(
+        self, codegen_state: CodeGenerationState, temp_var: TemporaryVariable
+    ) -> Declarator:
 
         temp_var_decl = self.get_array_base_declarator(temp_var)
 
@@ -699,24 +800,21 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
 
         assert isinstance(shape, tuple)
         assert isinstance(temp_var.dim_tags, tuple)
-
-        from loopy.kernel.array import drop_vec_dims
-        unvec_shape = drop_vec_dims(temp_var.dim_tags, shape)
-
-        return self.wrap_decl_for_address_space(temp_var_decl,
-                temp_var.address_space)
+        return self.wrap_decl_for_address_space(temp_var_decl, temp_var.address_space)
 
     def get_function_declaration(
-            self, codegen_state: CodeGenerationState,
-            codegen_result: CodeGenerationResult, schedule_index: int
-            ) -> Tuple[Sequence[Tuple[str, str]], Generable]:
+        self,
+        codegen_state: CodeGenerationState,
+        codegen_result: CodeGenerationResult,
+        schedule_index: int,
+    ) -> Tuple[Sequence[Tuple[str, str]], Generable]:
         kernel = codegen_state.kernel
         from loopy.schedule import CallKernel
+
         assert codegen_state.kernel.linearization is not None
         subkernel_name = cast(
-                        CallKernel,
-                        codegen_state.kernel.linearization[schedule_index]
-                        ).kernel_name
+            CallKernel, codegen_state.kernel.linearization[schedule_index]
+        ).kernel_name
 
         from cgen import FunctionDeclaration, Value
 
@@ -729,6 +827,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
 
             # subkernel launches occur only as part of entrypoint kernels for now
             from loopy.schedule.tools import get_subkernel_arg_info
+
             skai = get_subkernel_arg_info(kernel, subkernel_name)
             passed_names = skai.passed_names
             written_names = skai.written_names
@@ -737,57 +836,90 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             passed_names = [arg.name for arg in kernel.args]
             written_names = kernel.get_written_variables()
         from loopy.target.c import FunctionDeclarationWrapper
-        preambles, fdecl= [], FunctionDeclarationWrapper(
-                FunctionDeclaration(
-                    name,
-                    [self.arg_to_cgen_declarator(
-                            kernel, arg_name,
-                            is_written=arg_name in written_names)
-                        for arg_name in passed_names]))
-        preambles=self.required_work_grop_size(codegen_state,schedule_index,preambles)
+
+        preambles, fdecl = [], FunctionDeclarationWrapper(
+            FunctionDeclaration(
+                name,
+                [
+                    self.arg_to_cgen_declarator(
+                        kernel, arg_name, is_written=arg_name in written_names
+                    )
+                    for arg_name in passed_names
+                ],
+            )
+        )
+        preambles = self.required_work_grop_size(
+            codegen_state, schedule_index, preambles
+        )
         assert isinstance(fdecl, FunctionDeclarationWrapper)
         if not codegen_state.is_entrypoint:
             # auxiliary kernels need not mention sycl speicific qualifiers
             # for a functions signature
             return preambles, fdecl
+
         return preambles, FunctionDeclarationWrapper(
-                self._wrap_kernel_decl(codegen_state, schedule_index, fdecl.subdecl))
+            self._wrap_kernel_decl(codegen_state, schedule_index, fdecl.subdecl)
+        )
 
     def _wrap_kernel_decl(
-            self, codegen_state: CodeGenerationState, schedule_index: int,
-            fdecl: Declarator) -> Declarator:
+        self, codegen_state: CodeGenerationState, schedule_index: int, fdecl: Declarator
+    ) -> Declarator:
         from cgen.sycl import SYCLKernel
+
         from loopy.schedule import get_insn_ids_for_block_at
-        global_size, local_sizes = codegen_state.kernel.get_grid_sizes_for_insn_ids_as_exprs(
-                get_insn_ids_for_block_at(
-                    codegen_state.kernel.linearization, schedule_index),
-                codegen_state.callables_table)
-        fdecl = SYCLKernel(fdecl,len(global_size))
+
+        (
+            global_size,
+            local_sizes,
+        ) = codegen_state.kernel.get_grid_sizes_for_insn_ids_as_exprs(
+            get_insn_ids_for_block_at(
+                codegen_state.kernel.linearization, schedule_index
+            ),
+            codegen_state.callables_table,
+        )
+        fdecl = SYCLKernel(
+            fdecl, len(global_size), _SYCL_VARIABLE["nd_range"], _SYCL_VARIABLE["queue"]
+        )
         return fdecl
-    def required_work_grop_size( self, codegen_state: CodeGenerationState, schedule_index: int,preambles):
+
+    def required_work_grop_size(
+        self, codegen_state: CodeGenerationState, schedule_index: int, preambles
+    ):
         from cgen.sycl import SYCLRequiredWorkGroupSize
+
         from loopy.schedule import get_insn_ids_for_block_at
-        global_size, local_sizes = codegen_state.kernel.get_grid_sizes_for_insn_ids_as_exprs(
-                get_insn_ids_for_block_at(
-                    codegen_state.kernel.linearization, schedule_index),
-                codegen_state.callables_table)
+
+        (
+            global_size,
+            local_sizes,
+        ) = codegen_state.kernel.get_grid_sizes_for_insn_ids_as_exprs(
+            get_insn_ids_for_block_at(
+                codegen_state.kernel.linearization, schedule_index
+            ),
+            codegen_state.callables_table,
+        )
 
         from loopy.symbolic import get_dependencies
+
         if not get_dependencies(local_sizes):
             # sizes can't have parameter dependencies if they are
             # to be used in static WG size.
-            preambles = [("10",str(SYCLRequiredWorkGroupSize(local_sizes)))]
+            preambles = [("10", str(SYCLRequiredWorkGroupSize(local_sizes)))]
         return preambles
 
     def generate_top_of_body(self, codegen_state):
         from loopy.kernel.data import ImageArg
+
         if any(isinstance(arg, ImageArg) for arg in codegen_state.kernel.args):
-            from cgen import Value, Const, Initializer
+            from cgen import Const, Initializer, Value
+
             return [
-                    Initializer(Const(Value("sampler_t", "loopy_sampler")),
-                        "CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP "
-                        "| CLK_FILTER_NEAREST")
-                    ]
+                Initializer(
+                    Const(Value("sampler_t", "loopy_sampler")),
+                    "CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP "
+                    "| CLK_FILTER_NEAREST",
+                )
+            ]
 
         return []
 
@@ -812,7 +944,12 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             mem_kind = mem_kind.upper()
 
             from cgen import Statement
-            return Statement("group_barrier({}.get_group()){}".format(_SYCL_VARIABLE["nd_item"],comment))
+
+            return Statement(
+                "group_barrier({}.get_group()){}".format(
+                    _SYCL_VARIABLE["nd_item"], comment
+                )
+            )
         elif synchronization_kind == "global":
             raise LoopyError("SYCL does not have global barriers")
         else:
@@ -821,8 +958,10 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
     # {{{ declarators
 
     def wrap_decl_for_address_space(
-            self, decl: Declarator, address_space: AddressSpace) -> Declarator:
+        self, decl: Declarator, address_space: AddressSpace
+    ) -> Declarator:
         from cgen.sycl import SYCLGlobal, SYCLLocal
+
         if address_space == AddressSpace.GLOBAL:
             return SYCLGlobal(decl)
         elif address_space == AddressSpace.LOCAL:
@@ -830,12 +969,13 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         elif address_space == AddressSpace.PRIVATE:
             return decl
         else:
-            raise ValueError("unexpected temporary variable address space: %s"
-                    % address_space)
+            raise ValueError(
+                "unexpected temporary variable address space: %s" % address_space
+            )
 
     def wrap_global_constant(self, decl: Declarator) -> Declarator:
         from cgen.sycl import SYCLConstant
-        assert isinstance(decl, SYCLGlobal)
+
         decl = decl.subdecl
 
         return SYCLConstant(decl)
@@ -857,75 +997,107 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                 else:
                     raise NotImplementedError(
                         f"{type(self).__name__} does not understand axis tag "
-                        f"'{type(dim_tag)}.")
+                        f"'{type(dim_tag)}."
+                    )
 
         from loopy.target.c import POD
+
         return POD(self, dtype, ary.name)
 
     def get_constant_arg_declarator(self, arg: ConstantArg) -> Declarator:
-        from cgen import RestrictPointer
-        from cgen.opencl import CLConstant
+        from cgen.sycl import SYCLConstant
 
-        # constant *is* an address space as far as CL is concerned, do not re-wrap
-        return CLConstant(RestrictPointer(self.get_array_base_declarator(
-                arg)))
+        return SYCLConstant(self.get_array_base_declarator(arg))
 
-    def get_image_arg_declarator(
-            self, arg: ImageArg, is_written: bool) -> Declarator:
+    # TODO sycl Image
+    def get_image_arg_declarator(self, arg: ImageArg, is_written: bool) -> Declarator:
         if is_written:
             mode = "w"
         else:
             mode = "r"
 
-        from cgen.opencl import CLImage
-        return CLImage(arg.num_target_axes(), mode, arg.name)
+        from cgen.sycl import SYCLImage
+
+        return SYCLImage(arg.num_target_axes(), mode, arg.name)
 
     # }}}
 
     # {{{ atomics
 
-    def emit_atomic_init(self, codegen_state, lhs_atomicity, lhs_var,
-            lhs_expr, rhs_expr, lhs_dtype, rhs_type_context):
+    def emit_atomic_init(
+        self,
+        codegen_state,
+        lhs_atomicity,
+        lhs_var,
+        lhs_expr,
+        rhs_expr,
+        lhs_dtype,
+        rhs_type_context,
+    ):
         # for the CL1 flavor, this is as simple as a regular update with whatever
         # the RHS value is...
 
-        return self.emit_atomic_update(codegen_state, lhs_atomicity, lhs_var,
-            lhs_expr, rhs_expr, lhs_dtype, rhs_type_context)
+        return self.emit_atomic_update(
+            codegen_state,
+            lhs_atomicity,
+            lhs_var,
+            lhs_expr,
+            rhs_expr,
+            lhs_dtype,
+            rhs_type_context,
+        )
 
-    def emit_atomic_update(self, codegen_state, lhs_atomicity, lhs_var,
-            lhs_expr, rhs_expr, lhs_dtype, rhs_type_context):
+    def emit_atomic_update(
+        self,
+        codegen_state,
+        lhs_atomicity,
+        lhs_var,
+        lhs_expr,
+        rhs_expr,
+        lhs_dtype,
+        rhs_type_context,
+    ):
         from pymbolic.mapper.stringifier import PREC_NONE
 
         # FIXME: Could detect operations, generate atomic_{add,...} when
         # appropriate.
 
         if isinstance(lhs_dtype, NumpyType) and lhs_dtype.numpy_dtype in [
-                np.int32, np.int64, np.float32, np.float64]:
-            from cgen import Block, DoWhile, Assign
+            np.int32,
+            np.int64,
+            np.float32,
+            np.float64,
+        ]:
+            from cgen import Assign, Block, DoWhile
+
             from loopy.target.c import POD
+
             old_val_var = codegen_state.var_name_generator("loopy_old_val")
             new_val_var = codegen_state.var_name_generator("loopy_new_val")
 
-            from loopy.kernel.data import TemporaryVariable, AddressSpace
+            from loopy.kernel.data import AddressSpace, TemporaryVariable
+
             ecm = codegen_state.expression_to_code_mapper.with_assignments(
-                    {
-                        old_val_var: TemporaryVariable(old_val_var, lhs_dtype,
-                            shape=()),
-                        new_val_var: TemporaryVariable(new_val_var, lhs_dtype,
-                            shape=()),
-                        })
+                {
+                    old_val_var: TemporaryVariable(old_val_var, lhs_dtype, shape=()),
+                    new_val_var: TemporaryVariable(new_val_var, lhs_dtype, shape=()),
+                }
+            )
 
             lhs_expr_code = ecm(lhs_expr, prec=PREC_NONE, type_context=None)
 
-            from pymbolic.mapper.substitutor import make_subst_func
             from pymbolic import var
+            from pymbolic.mapper.substitutor import make_subst_func
+
             from loopy.symbolic import SubstitutionMapper
 
-            subst = SubstitutionMapper(
-                    make_subst_func({lhs_expr: var(old_val_var)}))
-            rhs_expr_code = ecm(subst(rhs_expr), prec=PREC_NONE,
-                    type_context=rhs_type_context,
-                    needed_dtype=lhs_dtype)
+            subst = SubstitutionMapper(make_subst_func({lhs_expr: var(old_val_var)}))
+            rhs_expr_code = ecm(
+                subst(rhs_expr),
+                prec=PREC_NONE,
+                type_context=rhs_type_context,
+                needed_dtype=lhs_dtype,
+            )
 
             if lhs_dtype.numpy_dtype.itemsize == 4:
                 func_name = "atomic_cmpxchg"
@@ -946,74 +1118,83 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                 else:
                     raise AssertionError()
 
-                from loopy.kernel.data import (TemporaryVariable, ArrayArg)
+                from loopy.kernel.data import ArrayArg, TemporaryVariable
+
                 if (
-                        isinstance(lhs_var, ArrayArg)
-                        and
-                        lhs_var.address_space == AddressSpace.GLOBAL):
+                    isinstance(lhs_var, ArrayArg)
+                    and lhs_var.address_space == AddressSpace.GLOBAL
+                ):
                     var_kind = ""
                 elif (
-                        isinstance(lhs_var, ArrayArg)
-                        and
-                        lhs_var.address_space == AddressSpace.LOCAL):
+                    isinstance(lhs_var, ArrayArg)
+                    and lhs_var.address_space == AddressSpace.LOCAL
+                ):
                     var_kind = "__local"
                 elif (
-                        isinstance(lhs_var, TemporaryVariable)
-                        and lhs_var.address_space == AddressSpace.LOCAL):
+                    isinstance(lhs_var, TemporaryVariable)
+                    and lhs_var.address_space == AddressSpace.LOCAL
+                ):
                     var_kind = "__local"
                 elif (
-                        isinstance(lhs_var, TemporaryVariable)
-                        and lhs_var.address_space == AddressSpace.GLOBAL):
+                    isinstance(lhs_var, TemporaryVariable)
+                    and lhs_var.address_space == AddressSpace.GLOBAL
+                ):
                     var_kind = ""
                 else:
-                    raise LoopyError("unexpected kind of variable '%s' in "
-                            "atomic operation: '%s'"
-                            % (lhs_var.name, type(lhs_var).__name__))
+                    raise LoopyError(
+                        "unexpected kind of variable '%s' in "
+                        "atomic operation: '%s'"
+                        % (lhs_var.name, type(lhs_var).__name__)
+                    )
 
                 old_val = "*(%s *) &" % ctype + old_val
                 new_val = "*(%s *) &" % ctype + new_val
                 cast_str = f"({var_kind} {ctype} *) "
 
-            return Block([
-                POD(self, NumpyType(lhs_dtype.dtype),
-                    old_val_var),
-                POD(self, NumpyType(lhs_dtype.dtype),
-                    new_val_var),
-                DoWhile(
-                    "%(func_name)s("
-                    "%(cast_str)s&(%(lhs_expr)s), "
-                    "%(old_val)s, "
-                    "%(new_val)s"
-                    ") != %(old_val)s"
-                    % {
-                        "func_name": func_name,
-                        "cast_str": cast_str,
-                        "lhs_expr": lhs_expr_code,
-                        "old_val": old_val,
-                        "new_val": new_val,
+            return Block(
+                [
+                    POD(self, NumpyType(lhs_dtype.dtype), old_val_var),
+                    POD(self, NumpyType(lhs_dtype.dtype), new_val_var),
+                    DoWhile(
+                        "%(func_name)s("
+                        "%(cast_str)s&(%(lhs_expr)s), "
+                        "%(old_val)s, "
+                        "%(new_val)s"
+                        ") != %(old_val)s"
+                        % {
+                            "func_name": func_name,
+                            "cast_str": cast_str,
+                            "lhs_expr": lhs_expr_code,
+                            "old_val": old_val,
+                            "new_val": new_val,
                         },
-                    Block([
-                        Assign(old_val_var, lhs_expr_code),
-                        Assign(new_val_var, rhs_expr_code),
-                        ])
-                    )
-                ])
+                        Block(
+                            [
+                                Assign(old_val_var, lhs_expr_code),
+                                Assign(new_val_var, rhs_expr_code),
+                            ]
+                        ),
+                    ),
+                ]
+            )
         else:
             raise NotImplementedError("atomic update for '%s'" % lhs_dtype)
 
     # }}}
+
 
 # }}}
 
 
 # {{{ volatile mem acccess target
 
-class VolatileMemExpressionToSYCLCExpressionMapper(
-        ExpressionToSYCLCExpressionMapper):
+
+class VolatileMemExpressionToSYCLCExpressionMapper(ExpressionToSYCLCExpressionMapper):
     def make_subscript(self, array, base_expr, subscript):
         registry = self.codegen_state.ast_builder.target.get_dtype_registry()
 
         from loopy.kernel.data import AddressSpace
+
         if array.address_space == AddressSpace.GLOBAL:
             aspace = " "
         elif array.address_space == AddressSpace.LOCAL:
@@ -1024,13 +1205,14 @@ class VolatileMemExpressionToSYCLCExpressionMapper(
             raise ValueError("unexpected value of address space")
 
         from pymbolic import var
+
         return var(
-                "(%s volatile %s *) "
-                % (
-                    registry.dtype_to_ctype(array.dtype),
-                    aspace,
-                    )
-                )(base_expr)[subscript]
+            "(%s volatile %s *) "
+            % (
+                registry.dtype_to_ctype(array.dtype),
+                aspace,
+            )
+        )(base_expr)[subscript]
 
 
 class VolatileMemSYCLCASTBuilder(SYCLCASTBuilder):
@@ -1041,6 +1223,7 @@ class VolatileMemSYCLCASTBuilder(SYCLCASTBuilder):
 class VolatileMemSYCLTarget(SYCLTarget):
     def get_device_ast_builder(self):
         return VolatileMemSYCLCASTBuilder(self)
+
 
 # }}}
 
