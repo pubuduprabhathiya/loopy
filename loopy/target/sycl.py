@@ -769,11 +769,14 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             ),
             codegen_state.callables_table,
         )
+        ndim = len(global_sizes)
+        if len(global_sizes) < len(local_sizes):
+            ndim = len(local_sizes)
         function_body = Block(
             [
                 SYCLBody(
                     function_body,
-                    len(global_sizes),
+                    ndim,
                     _SYCL_VARIABLE["handler"],
                     _SYCL_VARIABLE["nd_item"],
                     _SYCL_VARIABLE["queue"],
@@ -877,8 +880,11 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             ),
             codegen_state.callables_table,
         )
+        ndim = len(global_size)
+        if len(global_size) < len(local_sizes):
+            ndim = len(local_sizes)
         fdecl = SYCLKernel(
-            fdecl, len(global_size), _SYCL_VARIABLE["nd_range"], _SYCL_VARIABLE["queue"]
+            fdecl, ndim, _SYCL_VARIABLE["nd_range"], _SYCL_VARIABLE["queue"]
         )
         return fdecl
 
