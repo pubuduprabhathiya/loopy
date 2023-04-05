@@ -776,7 +776,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             [
                 SYCLBody(
                     function_body,
-                    ndim,
+                    3,
                     _SYCL_VARIABLE["handler"],
                     _SYCL_VARIABLE["nd_item"],
                     _SYCL_VARIABLE["queue"],
@@ -884,7 +884,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         if len(global_size) < len(local_sizes):
             ndim = len(local_sizes)
         fdecl = SYCLKernel(
-            fdecl, ndim, _SYCL_VARIABLE["nd_range"], _SYCL_VARIABLE["queue"]
+            fdecl, 3, _SYCL_VARIABLE["nd_range"], _SYCL_VARIABLE["queue"]
         )
         return fdecl
 
