@@ -30,16 +30,13 @@ from pytools import memoize_method
 from loopy.codegen import CodeGenerationState
 from loopy.codegen.result import CodeGenerationResult
 from loopy.diagnostic import LoopyError, LoopyTypeError
-from loopy.kernel.array import ArrayBase, FixedStrideArrayDimTag, VectorArrayDimTag
-from loopy.kernel.data import (
-    AddressSpace,
-    ArrayArg,
-    ConstantArg,
-    ImageArg,
-    TemporaryVariable,
-)
+from loopy.kernel.array import (ArrayBase, FixedStrideArrayDimTag,
+                                VectorArrayDimTag)
+from loopy.kernel.data import (AddressSpace, ArrayArg, ConstantArg, ImageArg,
+                               TemporaryVariable)
 from loopy.kernel.function_interface import ScalarCallable
-from loopy.target.c import CFamilyASTBuilder, CFamilyTarget, DTypeRegistryWrapper
+from loopy.target.c import (CFamilyASTBuilder, CFamilyTarget,
+                            DTypeRegistryWrapper)
 from loopy.target.c.codegen.expression import ExpressionToCExpressionMapper
 from loopy.types import NumpyType
 
@@ -142,12 +139,14 @@ def _create_vector_types():
 
             try:
                 dtype = np.dtype(
-                    dict(names=names, formats=[base_type] * padded_count, titles=titles)
+                    {"names": names,
+                          "formats": [base_type] * padded_count, "titles": titles}
                 )
             except NotImplementedError:
                 try:
                     dtype = np.dtype(
-                        [((n, title), base_type) for (n, title) in zip(names, titles)]
+                        [((n, title), base_type)
+                          for (n, title) in zip(names, titles)]
                     )
                 except TypeError:
                     dtype = np.dtype(
@@ -305,7 +304,8 @@ class SYCLCallable(ScalarCallable):
 
             dtype = np.find_common_type(
                 [],
-                [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items() if id >= 0],
+                [dtype.numpy_dtype for id,
+                 dtype in arg_id_to_dtype.items() if id >= 0],
             )
 
             if dtype.kind == "c":
@@ -314,7 +314,8 @@ class SYCLCallable(ScalarCallable):
             dtype = NumpyType(dtype)
             return (
                 self.copy(
-                    name_in_target=name, arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}
+                    name_in_target=name,
+                    arg_id_to_dtype={-1: dtype, 0: dtype, 1: dtype}
                 ),
                 callables_table,
             )
@@ -349,7 +350,8 @@ class SYCLCallable(ScalarCallable):
             else:
                 # Unsupported type.
                 raise LoopyError(
-                    "%s function not supported for the types %s" % (name, common_dtype)
+                    "%s function not supported for the types %s" % (name,
+                                                                    common_dtype)
                 )
 
         elif name == "dot":
@@ -371,7 +373,8 @@ class SYCLCallable(ScalarCallable):
             return (
                 self.copy(
                     name_in_target=name,
-                    arg_id_to_dtype={-1: NumpyType(scalar_dtype), 0: dtype, 1: dtype},
+                    arg_id_to_dtype={-1: NumpyType(scalar_dtype),
+                                     0: dtype, 1: dtype},
                 ),
                 callables_table,
             )
@@ -423,11 +426,13 @@ class SYCLCallable(ScalarCallable):
                 if i not in arg_id_to_dtype or arg_id_to_dtype[i] is None:
                     # the types provided aren't mature enough to specialize the
                     # callable
-                    return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
+                    return (self.copy(arg_id_to_dtype=arg_id_to_dtype),
+                            callables_table)
 
             dtype = np.find_common_type(
                 [],
-                [dtype.numpy_dtype for id, dtype in arg_id_to_dtype.items() if id >= 0],
+                [dtype.numpy_dtype for id,
+                 dtype in arg_id_to_dtype.items() if id >= 0],
             )
 
             if dtype.kind == "c":
@@ -438,7 +443,8 @@ class SYCLCallable(ScalarCallable):
             }
 
             return (
-                self.copy(name_in_target=name, arg_id_to_dtype=updated_arg_id_to_dtype),
+                self.copy(name_in_target=name,
+                          arg_id_to_dtype=updated_arg_id_to_dtype),
                 callables_table,
             )
 
@@ -455,7 +461,8 @@ class SYCLCallable(ScalarCallable):
                 if i not in arg_id_to_dtype or arg_id_to_dtype[i] is None:
                     # the types provided aren't mature enough to specialize the
                     # callable
-                    return (self.copy(arg_id_to_dtype=arg_id_to_dtype), callables_table)
+                    return (self.copy(arg_id_to_dtype=arg_id_to_dtype),
+                            callables_table)
 
             updated_arg_id_to_dtype = {id: NumpyType(dtype) for id in range(count)}
             updated_arg_id_to_dtype[-1] = SYCLTarget().vector_dtype(
@@ -645,9 +652,7 @@ class SYCLTarget(CFamilyTarget):
     @memoize_method
     def get_dtype_registry(self):
         from loopy.target.c.compyte.dtypes import (
-            DTypeRegistry,
-            fill_registry_with_opencl_c_types,
-        )
+            DTypeRegistry, fill_registry_with_opencl_c_types)
 
         result = DTypeRegistry()
         fill_registry_with_opencl_c_types(result)
@@ -698,7 +703,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
     # }}}
 
     # {{{ top-level codegen
-    def get_array_arg_declarator(self, arg: ArrayArg, is_written: bool) -> Declarator:
+    def get_array_arg_declarator(self, arg: ArrayArg,
+                                 is_written: bool) -> Declarator:
         from cgen import Pointer
 
         arg_decl = Pointer(self.get_array_base_declarator(arg))
@@ -719,9 +725,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         assert kernel.linearization is not None
 
         from cgen import Block, FunctionBody, Initializer, Line
-        from cgen import (
-            Module as Collection,
-        )  # Post-mid-2016 cgens have 'Collection', too.
+        from cgen import \
+            Module as Collection  # Post-mid-2016 cgens have 'Collection', too.
 
         result = []
 
@@ -754,7 +759,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
                     if tv.initializer is not None:
                         decl = Initializer(
                             decl,
-                            generate_array_literal(codegen_state, tv, tv.initializer),
+                            generate_array_literal(codegen_state, tv,
+                                                   tv.initializer),
                         )
 
                     result.append(decl)
@@ -769,14 +775,11 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             ),
             codegen_state.callables_table,
         )
-        ndim = len(global_sizes)
-        if len(global_sizes) < len(local_sizes):
-            ndim = len(local_sizes)
         function_body = Block(
             [
                 SYCLBody(
                     function_body,
-                    ndim,
+                    3,
                     _SYCL_VARIABLE["handler"],
                     _SYCL_VARIABLE["nd_item"],
                     _SYCL_VARIABLE["queue"],
@@ -803,7 +806,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
 
         assert isinstance(shape, tuple)
         assert isinstance(temp_var.dim_tags, tuple)
-        return self.wrap_decl_for_address_space(temp_var_decl, temp_var.address_space)
+        return self.wrap_decl_for_address_space(temp_var_decl,
+                                                temp_var.address_space)
 
     def get_function_declaration(
         self,
@@ -840,7 +844,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             written_names = kernel.get_written_variables()
         from loopy.target.c import FunctionDeclarationWrapper
 
-        preambles, fdecl = [], FunctionDeclarationWrapper(
+        preambles: list = []
+        fdecl = FunctionDeclarationWrapper(
             FunctionDeclaration(
                 name,
                 [
@@ -865,7 +870,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         )
 
     def _wrap_kernel_decl(
-        self, codegen_state: CodeGenerationState, schedule_index: int, fdecl: Declarator
+        self, codegen_state: CodeGenerationState,
+        schedule_index: int, fdecl: Declarator
     ) -> Declarator:
         from cgen.sycl import SYCLKernel
 
@@ -880,11 +886,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
             ),
             codegen_state.callables_table,
         )
-        ndim = len(global_size)
-        if len(global_size) < len(local_sizes):
-            ndim = len(local_sizes)
         fdecl = SYCLKernel(
-            fdecl, ndim, _SYCL_VARIABLE["nd_range"], _SYCL_VARIABLE["queue"]
+            fdecl, 3, _SYCL_VARIABLE["nd_range"], _SYCL_VARIABLE["queue"]
         )
         return fdecl
 
@@ -1016,7 +1019,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         return SYCLConstant(self.get_array_base_declarator(arg))
 
     # TODO sycl Image
-    def get_image_arg_declarator(self, arg: ImageArg, is_written: bool) -> Declarator:
+    def get_image_arg_declarator(self, arg: ImageArg,
+    is_written: bool) -> Declarator:
         if is_written:
             mode = "w"
         else:
@@ -1195,7 +1199,8 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
 # {{{ volatile mem acccess target
 
 
-class VolatileMemExpressionToSYCLCExpressionMapper(ExpressionToSYCLCExpressionMapper):
+class VolatileMemExpressionToSYCLCExpressionMapper(
+        ExpressionToSYCLCExpressionMapper):
     def make_subscript(self, array, base_expr, subscript):
         registry = self.codegen_state.ast_builder.target.get_dtype_registry()
 

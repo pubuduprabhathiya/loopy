@@ -308,7 +308,7 @@ __all__ = [
         "TargetBase",
         "CFamilyTarget", "CTarget", "ExecutableCTarget", "generate_header",
         "CWithGNULibcTarget", "ExecutableCWithGNULibcTarget",
-        "CudaTarget", "OpenCLTarget","SYCLTarget",
+        "CudaTarget", "OpenCLTarget", "SYCLTarget",
         "PyOpenCLTarget", "ISPCTarget",
         "ASTBuilderBase",
 
