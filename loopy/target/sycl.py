@@ -24,7 +24,7 @@ from typing import Sequence, Tuple, cast
 
 import numpy as np
 from cgen import Const, Declarator, Generable
-from pymbolic import var
+from pymbolic import var, parse
 from pytools import memoize_method
 
 from loopy.codegen import CodeGenerationState
@@ -579,6 +579,16 @@ def sycl_preamble_generator(preamble_info):
             """,
         )
 
+    from loopy.tools import remove_common_indentation
+    kernel = preamble_info.kernel
+
+    idx_ctype = kernel.target.dtype_to_typename(kernel.index_dtype)
+    yield ("00_declare_gid_lid",
+            remove_common_indentation(f"""
+                #define lid(item, N) (({idx_ctype}) item.get_local_id(N))
+                #define gid(item, N) (({idx_ctype}) item.get_group(N))
+                """))
+
     for func in preamble_info.seen_functions:
         if func.name == "pow" and func.c_name == "powf32":
             yield (
@@ -616,18 +626,15 @@ class ExpressionToSYCLCExpressionMapper(ExpressionToCExpressionMapper):
         return super().wrap_in_typecast_lazy(actual_dtype, needed_dtype, s)
 
     def map_group_hw_index(self, expr, type_context):
-        return var("item.get_group")(expr.axis)
+        return var("gid")(parse(_SYCL_VARIABLE["nd_item"]), expr.axis)
 
     def map_local_hw_index(self, expr, type_context):
-        return var("item.get_local_id")(expr.axis)
+        return var("lid")(parse(_SYCL_VARIABLE["nd_item"]), expr.axis)
 
 
 # }}}
 
-
 # {{{ target
-
-
 class SYCLTarget(CFamilyTarget):
     """A target for the SYCL C heterogeneous compute programming language."""
 
