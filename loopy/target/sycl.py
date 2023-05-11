@@ -800,22 +800,6 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         else:
             return Collection(result + [Line(), fbody])
 
-    def get_temporary_var_declarator(
-        self, codegen_state: CodeGenerationState, temp_var: TemporaryVariable
-    ) -> Declarator:
-
-        temp_var_decl = self.get_array_base_declarator(temp_var)
-
-        if temp_var.storage_shape:
-            shape = temp_var.storage_shape
-        else:
-            shape = temp_var.shape
-
-        assert isinstance(shape, tuple)
-        assert isinstance(temp_var.dim_tags, tuple)
-        return self.wrap_decl_for_address_space(temp_var_decl,
-                                                temp_var.address_space)
-
     def get_function_declaration(
         self,
         codegen_state: CodeGenerationState,
@@ -981,7 +965,7 @@ class SYCLCASTBuilder(CFamilyASTBuilder):
         if address_space == AddressSpace.GLOBAL:
             return SYCLGlobal(decl)
         elif address_space == AddressSpace.LOCAL:
-            return SYCLLocal(decl)
+            return SYCLLocal(decl, _SYCL_VARIABLE["nd_item"])
         elif address_space == AddressSpace.PRIVATE:
             return decl
         else:
