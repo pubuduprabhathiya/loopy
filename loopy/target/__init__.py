@@ -10,6 +10,7 @@
 .. autoclass:: OpenCLTarget
 .. autoclass:: PyOpenCLTarget
 .. autoclass:: ISPCTarget
+.. autoclass:: SYCLTarget
 
 References to Canonical Names
 -----------------------------

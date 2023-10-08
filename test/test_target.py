@@ -101,6 +101,28 @@ def test_cuda_target():
                 knl).device_code())
 
 
+def test_sycl_target():
+    from loopy.target.sycl import SYCLTarget
+
+    knl = lp.make_kernel(
+            "{ [i]: 0<=i<n }",
+            "out[i] = 2*a[i]",
+            [
+                lp.GlobalArg("out,a", np.float32, shape=lp.auto),
+                "..."
+                ],
+            target=SYCLTarget())
+
+    knl = lp.split_iname(knl, "i", 8, inner_tag="l.0")
+    knl = lp.split_iname(knl, "i_outer", 4, outer_tag="g.0", inner_tag="ilp")
+    knl = lp.add_prefetch(knl, "a", ["i_inner", "i_outer_inner"],
+            default_tag="l.auto")
+
+    print(
+            lp.generate_code_v2(
+                knl).device_code())
+
+
 def test_generate_c_snippet():
     from pymbolic import var
     I = var("I")  # noqa
